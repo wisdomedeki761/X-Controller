@@ -80,9 +80,19 @@ npm install
 node bot.js accounts  # Should list your accounts
 ```
 
-3. **Start Telegram Bot:**
+3. **Start with PM2 (Production):**
 ```bash
-npm run telegram
+# Install PM2 globally
+npm install -g pm2
+
+# Start the bot
+npm run pm2:start
+
+# Check status
+npm run pm2:status
+
+# View logs
+npm run pm2:logs
 ```
 
 4. **Chat with AI (optional):**
@@ -310,6 +320,8 @@ X-raider/
 ├── data/                  # AI model cache
 │   └── free-models.json
 ├── temp/                  # Temporary image storage
+├── logs/                  # PM2 log files
+├── data/                  # AI model cache
 ├── bot.js                 # Main CLI entry point
 ├── accountManager.js      # Account loading and management
 ├── postDistributor.js     # Post distribution logic
@@ -318,13 +330,18 @@ X-raider/
 ├── openRouterClient.js    # OpenRouter AI client
 ├── modelUpdater.js        # AI model update cron job
 ├── updateModels.js        # Manual model update script
+├── ecosystem.config.js    # PM2 process configuration
 ├── utils.js               # Utility functions
 ├── .env                   # Main configuration
 ├── package.json
 ├── plan.md                # X API setup guide
 ├── README.md
 ├── AI_INTEGRATION_README.md    # AI features documentation
-└── TELEGRAM_BOT_README.md      # Telegram bot documentation
+├── TELEGRAM_BOT_README.md      # Telegram bot documentation
+├── PM2_SETUP_GUIDE.md          # PM2 deployment guide
+├── LINUX_DEPLOYMENT.md         # Linux VPS deployment guide
+├── x-raider.service            # Systemd service file (alternative)
+└── deploy.sh                   # Automated deployment script
 ```
 
 ## Troubleshooting
@@ -390,6 +407,49 @@ X-raider/
 - Check internet connection
 - Models update automatically every 6 hours
 
+## Linux VPS Deployment
+
+### Automated Deployment
+```bash
+# On your Linux VPS
+git clone <your-repo-url>
+cd x-raider
+
+# Configure environment
+nano .env  # Add your tokens and admin IDs
+
+# Run automated deployment
+chmod +x deploy.sh
+./deploy.sh
+```
+
+### Manual PM2 Deployment
+```bash
+# Install PM2 globally
+npm install -g pm2
+
+# Start all services
+npm run pm2:start
+
+# Set up auto-startup on boot
+sudo pm2 startup systemd -u $USER --hp $HOME
+pm2 save
+
+# Check status
+npm run pm2:status
+
+# View logs
+npm run pm2:logs
+```
+
+### PM2 Management
+```bash
+npm run pm2:stop     # Stop all processes
+npm run pm2:restart  # Restart all processes
+npm run pm2:delete   # Stop and remove all processes
+pm2 monit            # Real-time monitoring
+```
+
 ## Available Scripts
 
 ```bash
@@ -404,10 +464,19 @@ node bot.js retweet     # Retweet
 node bot.js reply       # Reply to tweets
 
 # Telegram Bot
-npm run telegram        # Start Telegram bot
+npm run telegram        # Start Telegram bot (development)
 
 # AI Model Management
 npm run updatemodels    # Update AI models manually
+
+# PM2 Production Management
+npm run pm2:start       # Start all PM2 processes
+npm run pm2:stop        # Stop all PM2 processes
+npm run pm2:restart     # Restart all PM2 processes
+npm run pm2:delete      # Remove all PM2 processes
+npm run pm2:status      # Show PM2 process status
+npm run pm2:logs        # Show all PM2 logs
+npm run pm2:monit       # Open PM2 monitoring interface
 ```
 
 ## Documentation

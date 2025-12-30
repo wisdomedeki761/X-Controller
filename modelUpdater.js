@@ -11,16 +11,18 @@ export class ModelUpdater {
   }
 
   /**
-   * Start the cron job to update models every 6 hours
+   * Start the cron job to update models every 6 hours (no immediate update)
    */
   startCronJob() {
-    // Update models every 6 hours (0 */6 * * *)
-    cron.schedule('0 */6 * * *', async () => {
+    // Update models every 6 hours at specific minutes past the hour
+    // Use minutes 15 to avoid running immediately on startup
+    cron.schedule('15 */6 * * *', async () => {
       console.log('🕐 Scheduled model update starting...');
       await this.updateModels();
     });
 
-    console.log('⏰ Model updater cron job started (updates every 6 hours)');
+    console.log('⏰ Model updater cron job started (updates every 6 hours at :15 past the hour)');
+    console.log('📅 Next update will run at the next HH:15 time');
   }
 
   /**
