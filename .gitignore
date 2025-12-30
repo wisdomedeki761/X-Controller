@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Account credentials (IMPORTANT: Never commit these!)
+accounts/*.env
+accounts/.env*
+
+# AI Model data
+data/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+MD-FILES/

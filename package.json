@@ -1,0 +1,35 @@
+{
+  "name": "x-raider",
+  "version": "1.0.0",
+  "description": "Multi-account X (Twitter) bot for posting, retweeting, and replying",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "telegram": "node telegramBot-cli.js",
+    "updatemodels": "node updateModels.js",
+    "post": "node bot.js post",
+    "retweet": "node bot.js retweet",
+    "reply": "node bot.js reply"
+  },
+  "keywords": [
+    "twitter",
+    "x",
+    "bot",
+    "multi-account",
+    "automation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "twitter-api-v2": "^1.28.0",
+    "dotenv": "^16.3.1",
+    "commander": "^11.1.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "multer": "^1.4.5-lts.1",
+    "express": "^4.18.2",
+    "axios": "^1.6.2",
+    "node-cron": "^3.0.3"
+  }
+}
+

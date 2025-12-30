@@ -1,0 +1,30 @@
+ What You Can Do Now:
+Post Multiple Tweets with Images:
+Send /post
+Send 10 tweets separated by paragraphs
+Upload an image
+Bot distributes 1 tweet per account + returns all tweet links
+Reply to Tweets:
+Send /reply
+Paste tweet URL/ID
+Send reply text
+Bot replies from all accounts
+Add New Accounts:
+Send /addaccount
+Bot guides you through adding API_KEY, API_SECRET, etc.
+Saves to accounts/ folder automatically
+Full Control:
+/accounts - List all accounts
+/retweet - Retweet across accounts
+/help - Detailed help
+
+🚀 What You Can Do Now:
+Chat with AI through Telegram:
+/ai Hello! - Direct message
+/ai then send message - Separate commands
+Automatic fallback - If one AI model fails, tries the next
+Free models only - Uses all models with ":free" in the name
+Model Management:
+/models - View available AI models
+/updatemodels - Force update model list
+Auto-updates every 6 hours
