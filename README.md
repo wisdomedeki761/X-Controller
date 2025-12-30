@@ -237,14 +237,25 @@ Result: Replies will be distributed across accounts.
 **Available Commands:**
 - `/start` - Welcome message and help
 - `/accounts` - List all configured accounts
-- `/post` - Create posts with images
-- `/reply` - Reply to tweets
-- `/retweet` - Retweet posts
+- `/post` - Create posts (uses all accounts)
+- `/post5` - Create posts (uses 5 accounts)
+- `/post3` - Create posts (uses 3 accounts)
+- `/reply` - Reply to tweets (uses all accounts)
+- `/reply2` - Reply to tweets (uses 2 accounts)
+- `/retweet` - Retweet tweets (uses all accounts)
+- `/retweet1` - Retweet tweets (uses 1 account)
 - `/addaccount` - Add new accounts
 - `/ai` - Chat with AI (if configured)
 - `/models` - List available AI models
 - `/updatemodels` - Force update AI models
 - `/help` - Show detailed help
+
+**Account Control:** Add **any number** after any command to limit accounts used:
+- `/post` = all accounts, `/post5` = 5 accounts, `/post1` = 1 account, `/post11` = 11 accounts
+- `/reply` = all accounts, `/reply3` = 3 accounts, `/reply7` = 7 accounts
+- `/retweet` = all accounts, `/retweet2` = 2 accounts, `/retweet99` = 99 accounts
+
+*If the number exceeds your available accounts, it uses all accounts automatically.*
 
 ### AI Chat Examples
 

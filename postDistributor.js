@@ -11,14 +11,21 @@ export class PostDistributor {
   /**
    * Distributes posts across accounts
    * Each account posts one unique post from the list
-   * 
+   *
    * @param {string[]} posts - Array of post texts
    * @param {Object} options - Options for posting
+   * @param {string} options.imagePath - Optional path to image file to attach to all posts
+   * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
    * @returns {Promise<Array>} Results of all posts
    */
   async distributePosts(posts, options = {}) {
-    const accounts = this.accountManager.getAccounts();
+    const allAccounts = this.accountManager.getAccounts();
     const delayBetweenPosts = options.delay || 2000; // 2 seconds default
+    const imagePath = options.imagePath;
+    const maxAccounts = options.maxAccounts || allAccounts.length;
+
+    // Limit accounts to the specified maximum
+    const accounts = allAccounts.slice(0, maxAccounts);
     const results = [];
 
     if (accounts.length === 0) {
@@ -29,7 +36,21 @@ export class PostDistributor {
       throw new Error("No posts provided.");
     }
 
-    console.log(`\n📊 Distributing ${posts.length} post(s) across ${accounts.length} account(s)...\n`);
+    console.log(`\n📊 Distributing ${posts.length} post(s) across ${accounts.length} account(s)...${imagePath ? ' with image' : ''}\n`);
+
+    // If image provided, upload it once and get media ID
+    let mediaId = null;
+    if (imagePath) {
+      try {
+        console.log('🖼️  Uploading image...');
+        // Use the first account to upload the image (they all have the same upload permissions)
+        mediaId = await accounts[0].client.v1.uploadMedia(imagePath, { mimeType: this.getMimeType(imagePath) });
+        console.log(`✅ Image uploaded successfully: ${mediaId}`);
+      } catch (error) {
+        console.error('❌ Failed to upload image:', error.message);
+        throw new Error(`Image upload failed: ${error.message}`);
+      }
+    }
 
     // Distribute posts: each account gets one post
     // If more posts than accounts, some accounts will post multiple times
@@ -49,11 +70,19 @@ export class PostDistributor {
         const postText = posts[postIndex];
         
         try {
-          console.log(`📝 [${account.name}] Posting: "${postText.substring(0, 50)}${postText.length > 50 ? '...' : ''}"`);
-          
-          const result = await account.client.v2.tweet({
+          console.log(`📝 [${account.name}] Posting: "${postText.substring(0, 50)}${postText.length > 50 ? '...' : ''}"${mediaId ? ' with image' : ''}`);
+
+          // Prepare tweet data
+          const tweetData = {
             text: postText,
-          });
+          };
+
+          // Add media if available
+          if (mediaId) {
+            tweetData.media = { media_ids: [mediaId] };
+          }
+
+          const result = await account.client.v2.tweet(tweetData);
 
           results.push({
             success: true,
@@ -104,14 +133,19 @@ export class PostDistributor {
 
   /**
    * Distributes retweets across accounts
-   * 
+   *
    * @param {string} tweetId - Tweet ID to retweet
    * @param {Object} options - Options for retweeting
+   * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
    * @returns {Promise<Array>} Results of all retweets
    */
   async distributeRetweets(tweetId, options = {}) {
-    const accounts = this.accountManager.getAccounts();
+    const allAccounts = this.accountManager.getAccounts();
     const delayBetweenRetweets = options.delay || 2000;
+    const maxAccounts = options.maxAccounts || allAccounts.length;
+
+    // Limit accounts to the specified maximum
+    const accounts = allAccounts.slice(0, maxAccounts);
     const results = [];
 
     if (accounts.length === 0) {
@@ -170,15 +204,22 @@ export class PostDistributor {
 
   /**
    * Distributes replies across accounts
-   * 
+   *
    * @param {string} tweetId - Tweet ID to reply to
    * @param {string[]} replies - Array of reply texts
    * @param {Object} options - Options for replying
+   * @param {string} options.imagePath - Optional path to image file to attach to all replies
+   * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
    * @returns {Promise<Array>} Results of all replies
    */
   async distributeReplies(tweetId, replies, options = {}) {
-    const accounts = this.accountManager.getAccounts();
+    const allAccounts = this.accountManager.getAccounts();
     const delayBetweenReplies = options.delay || 2000;
+    const imagePath = options.imagePath;
+    const maxAccounts = options.maxAccounts || allAccounts.length;
+
+    // Limit accounts to the specified maximum
+    const accounts = allAccounts.slice(0, maxAccounts);
     const results = [];
 
     if (accounts.length === 0) {
@@ -189,7 +230,21 @@ export class PostDistributor {
       throw new Error("No replies provided.");
     }
 
-    console.log(`\n💬 Replying to ${tweetId} with ${replies.length} reply(ies) across ${accounts.length} account(s)...\n`);
+    console.log(`\n💬 Replying to ${tweetId} with ${replies.length} reply(ies) across ${accounts.length} account(s)...${imagePath ? ' with image' : ''}\n`);
+
+    // If image provided, upload it once and get media ID
+    let mediaId = null;
+    if (imagePath) {
+      try {
+        console.log('🖼️  Uploading image for replies...');
+        // Use the first account to upload the image
+        mediaId = await accounts[0].client.v1.uploadMedia(imagePath, { mimeType: this.getMimeType(imagePath) });
+        console.log(`✅ Image uploaded successfully: ${mediaId}`);
+      } catch (error) {
+        console.error('❌ Failed to upload image:', error.message);
+        throw new Error(`Image upload failed: ${error.message}`);
+      }
+    }
 
     // Distribute replies similar to posts
     const repliesPerAccount = Math.ceil(replies.length / accounts.length);
@@ -206,12 +261,20 @@ export class PostDistributor {
         const replyText = replies[replyIndex];
 
         try {
-          console.log(`💬 [${account.name}] Replying: "${replyText.substring(0, 50)}${replyText.length > 50 ? '...' : ''}"`);
-          
-          const result = await account.client.v2.tweet({
+          console.log(`💬 [${account.name}] Replying: "${replyText.substring(0, 50)}${replyText.length > 50 ? '...' : ''}"${mediaId ? ' with image' : ''}`);
+
+          // Prepare reply data
+          const replyData = {
             text: replyText,
             reply: { in_reply_to_tweet_id: tweetId },
-          });
+          };
+
+          // Add media if available
+          if (mediaId) {
+            replyData.media = { media_ids: [mediaId] };
+          }
+
+          const result = await account.client.v2.tweet(replyData);
 
           results.push({
             success: true,
@@ -255,6 +318,23 @@ export class PostDistributor {
     }
 
     return results;
+  }
+
+  /**
+   * Get MIME type from file extension
+   * @param {string} filePath - Path to the file
+   * @returns {string} MIME type
+   */
+  getMimeType(filePath) {
+    const ext = filePath.toLowerCase().split('.').pop();
+    const mimeTypes = {
+      'jpg': 'image/jpeg',
+      'jpeg': 'image/jpeg',
+      'png': 'image/png',
+      'gif': 'image/gif',
+      'webp': 'image/webp'
+    };
+    return mimeTypes[ext] || 'image/jpeg';
   }
 }
 
