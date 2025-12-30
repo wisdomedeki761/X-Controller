@@ -63,9 +63,9 @@ export class XRaiderTelegramBot {
     const commands = [
       { command: 'start', description: 'Start the bot' },
       { command: 'accounts', description: 'List all accounts' },
-      { command: 'post', description: 'Create a new post' },
-      { command: 'reply', description: 'Reply to a tweet' },
-      { command: 'retweet', description: 'Retweet a tweet' },
+      { command: 'post', description: 'Create posts (use /post5 for 5 accounts)' },
+      { command: 'reply', description: 'Reply to tweets (use /reply3 for 3 accounts)' },
+      { command: 'retweet', description: 'Retweet tweets (use /retweet2 for 2 accounts)' },
       { command: 'addaccount', description: 'Add a new account' },
       { command: 'help', description: 'Show help' }
     ];
@@ -138,10 +138,11 @@ Send me the text, then optionally add an image!
 📚 *X-Raider Bot Help*
 
 *Creating Posts:*
-1. Send /post command
+1. Send /post command (uses all accounts)
+   Or /post{N} (uses N accounts) - e.g., /post1, /post5, /post11, /post99
 2. Send your tweet text (use paragraphs for multiple tweets)
 3. Optionally send an image
-4. Bot will distribute across accounts
+4. Bot will distribute across selected accounts
 
 *Example Multi-Tweet:*
 \`\`\`
@@ -153,10 +154,17 @@ Tweet 3 content here
 \`\`\`
 
 *Replying to Tweets:*
-1. Send /reply command
+1. Send /reply command (uses all accounts)
+   Or /reply{N} (uses N accounts) - e.g., /reply1, /reply2, /reply7
 2. Send the tweet URL or ID
 3. Send your reply text
-4. Bot will reply from your accounts
+4. Bot will reply from selected accounts
+
+*Retweeting:*
+1. Send /retweet command (uses all accounts)
+   Or /retweet{N} (uses N accounts) - e.g., /retweet1, /retweet4, /retweet10
+2. Send the tweet URL or ID
+3. Bot will retweet from selected accounts
 
 *Adding Accounts:*
 1. Send /addaccount command
@@ -198,8 +206,8 @@ Need help? Contact the developer.
       this.bot.sendMessage(chatId, accountList, { parse_mode: 'Markdown' });
     });
 
-    // Post command
-    this.bot.onText(/\/post/, (msg) => {
+    // Post command with optional account count
+    this.bot.onText(/\/post(\d*)/, (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
 
@@ -207,14 +215,17 @@ Need help? Contact the developer.
         return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
-      this.userStates.set(userId, { action: 'waiting_for_post_text', chatId });
-      this.tempData.set(userId, {});
+      const maxAccounts = match[1] ? parseInt(match[1]) : null; // null means use all accounts
+      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
 
-      this.bot.sendMessage(chatId, '📝 *Send me your tweet text:*\n\n- For multiple tweets, separate with empty lines\n- Then optionally send an image\n\nExample:\n```\nFirst tweet\n\nSecond tweet\n\nThird tweet\n```', { parse_mode: 'Markdown' });
+      this.userStates.set(userId, { action: 'waiting_for_post_text', chatId, maxAccounts });
+      this.tempData.set(userId, { maxAccounts });
+
+      this.bot.sendMessage(chatId, `📝 *Send me your tweet text${accountCountText}:*\n\n- For multiple tweets, separate with empty lines\n- Then optionally send an image\n\nExample:\n\`\`\`\nFirst tweet\n\nSecond tweet\n\nThird tweet\n\`\`\``, { parse_mode: 'Markdown' });
     });
 
-    // Reply command
-    this.bot.onText(/\/reply/, (msg) => {
+    // Reply command with optional account count
+    this.bot.onText(/\/reply(\d*)/, (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
 
@@ -222,14 +233,17 @@ Need help? Contact the developer.
         return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
-      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, replyMode: true });
-      this.tempData.set(userId, {});
+      const maxAccounts = match[1] ? parseInt(match[1]) : null;
+      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
 
-      this.bot.sendMessage(chatId, '🔗 *Send me the tweet URL or ID to reply to:*', { parse_mode: 'Markdown' });
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, replyMode: true, maxAccounts });
+      this.tempData.set(userId, { maxAccounts });
+
+      this.bot.sendMessage(chatId, `🔗 *Send me the tweet URL or ID to reply to${accountCountText}:*`, { parse_mode: 'Markdown' });
     });
 
-    // Retweet command
-    this.bot.onText(/\/retweet/, (msg) => {
+    // Retweet command with optional account count
+    this.bot.onText(/\/retweet(\d*)/, (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
 
@@ -237,10 +251,13 @@ Need help? Contact the developer.
         return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
-      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, retweetMode: true });
-      this.tempData.set(userId, {});
+      const maxAccounts = match[1] ? parseInt(match[1]) : null;
+      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
 
-      this.bot.sendMessage(chatId, '🔄 *Send me the tweet URL or ID to retweet:*', { parse_mode: 'Markdown' });
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, retweetMode: true, maxAccounts });
+      this.tempData.set(userId, { maxAccounts });
+
+      this.bot.sendMessage(chatId, `🔄 *Send me the tweet URL or ID to retweet${accountCountText}:*`, { parse_mode: 'Markdown' });
     });
 
     // Add account command
@@ -500,7 +517,11 @@ Need help? Contact the developer.
       }
 
       // Distribute posts across accounts
-      const results = await this.postDistributor.distributePosts(tweets, { delay: 2000 });
+      const results = await this.postDistributor.distributePosts(tweets, {
+        delay: 2000,
+        imagePath: imagePath,
+        maxAccounts: data.maxAccounts
+      });
 
       // Send results back
       const successful = results.filter(r => r.success);
@@ -549,7 +570,17 @@ Need help? Contact the developer.
 
       this.bot.sendMessage(chatId, `💬 Processing ${replies.length} reply(ies)...`);
 
-      const results = await this.postDistributor.distributeReplies(data.tweetId, replies, { delay: 2000 });
+      // If image provided, download it temporarily
+      let imagePath = null;
+      if (data.imageUrl) {
+        imagePath = await this.downloadImage(data.imageUrl);
+      }
+
+      const results = await this.postDistributor.distributeReplies(data.tweetId, replies, {
+        delay: 2000,
+        imagePath: imagePath,
+        maxAccounts: data.maxAccounts
+      });
 
       const successful = results.filter(r => r.success);
       const failed = results.filter(r => !r.success);
@@ -585,7 +616,10 @@ Need help? Contact the developer.
     try {
       this.bot.sendMessage(chatId, '🔄 Retweeting...');
 
-      const results = await this.postDistributor.distributeRetweets(tweetId, { delay: 2000 });
+      const results = await this.postDistributor.distributeRetweets(tweetId, {
+        delay: 2000,
+        maxAccounts: userState.maxAccounts
+      });
 
       const successful = results.filter(r => r.success);
       const failed = results.filter(r => !r.success);
