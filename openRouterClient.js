@@ -16,14 +16,20 @@ export class OpenRouterClient {
     this.modelsFile = path.join(__dirname, 'data', 'free-models.json');
     this.models = [];
 
+    // Blacklist for problematic models that return empty responses
+    this.blacklistedModels = [
+      'allenai/olmo-3.1-32b-think:free', // AllenAI: Olmo 3.1 32B Think (free)
+    ];
+
     // Ensure data directory exists
     const dataDir = path.join(__dirname, 'data');
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
     }
 
-    // Load cached models
+    // Load cached models and blacklist
     this.loadModels();
+    this.loadBlacklist();
   }
 
   /**
@@ -33,8 +39,13 @@ export class OpenRouterClient {
     try {
       if (fs.existsSync(this.modelsFile)) {
         const data = fs.readFileSync(this.modelsFile, 'utf8');
-        this.models = JSON.parse(data);
-        console.log(`✅ Loaded ${this.models.length} cached free models`);
+        let cachedModels = JSON.parse(data);
+
+        // Filter out blacklisted models
+        cachedModels = cachedModels.filter(model => !this.blacklistedModels.includes(model.id));
+
+        this.models = cachedModels;
+        console.log(`✅ Loaded ${this.models.length} cached free models (filtered ${cachedModels.length - this.models.length} blacklisted)`);
       } else {
         console.log('⚠️  No cached models found, will fetch on first request');
       }
@@ -83,9 +94,11 @@ export class OpenRouterClient {
       console.log('🔄 Fetching free models from OpenRouter...');
       const allModels = await this.fetchAllModels();
 
-      // Filter for free models (models with ":free" in the name)
+      // Filter for free models (models with ":free" in the name) and exclude blacklisted models
       const freeModels = allModels.filter(model =>
-        model.id && model.id.includes(':free')
+        model.id &&
+        model.id.includes(':free') &&
+        !this.blacklistedModels.includes(model.id)
       ).map(model => ({
         id: model.id,
         name: model.name || model.id,
@@ -110,6 +123,53 @@ export class OpenRouterClient {
    */
   getFreeModels() {
     return this.models;
+  }
+
+  /**
+   * Add a model to the blacklist
+   */
+  blacklistModel(modelId) {
+    if (!this.blacklistedModels.includes(modelId)) {
+      this.blacklistedModels.push(modelId);
+      console.log(`🚫 Blacklisted problematic model: ${modelId}`);
+
+      // Remove from current models list if present
+      this.models = this.models.filter(model => model.id !== modelId);
+
+      // Save updated blacklist to models file (we'll store it as metadata)
+      this.saveBlacklist();
+    }
+  }
+
+  /**
+   * Save blacklist to a separate file
+   */
+  saveBlacklist() {
+    try {
+      const blacklistFile = path.join(__dirname, 'data', 'blacklisted-models.json');
+      fs.writeFileSync(blacklistFile, JSON.stringify(this.blacklistedModels, null, 2));
+      console.log(`💾 Saved blacklist with ${this.blacklistedModels.length} models`);
+    } catch (error) {
+      console.error('❌ Error saving blacklist:', error.message);
+    }
+  }
+
+  /**
+   * Load blacklist from file
+   */
+  loadBlacklist() {
+    try {
+      const blacklistFile = path.join(__dirname, 'data', 'blacklisted-models.json');
+      if (fs.existsSync(blacklistFile)) {
+        const data = fs.readFileSync(blacklistFile, 'utf8');
+        const savedBlacklist = JSON.parse(data);
+        // Merge with default blacklist
+        this.blacklistedModels = [...new Set([...this.blacklistedModels, ...savedBlacklist])];
+        console.log(`✅ Loaded ${savedBlacklist.length} additional blacklisted models`);
+      }
+    } catch (error) {
+      console.error('❌ Error loading blacklist:', error.message);
+    }
   }
 
   /**
@@ -149,6 +209,14 @@ export class OpenRouterClient {
 
         if (response.data && response.data.choices && response.data.choices[0]) {
           const reply = response.data.choices[0].message.content;
+
+          // Check if response is empty or just whitespace
+          if (!reply || reply.trim().length === 0) {
+            console.log(`🚫 Model ${model.name} returned empty response, blacklisting...`);
+            this.blacklistModel(model.id);
+            continue; // Try next model
+          }
+
           console.log(`✅ Success with model: ${model.name}`);
           return {
             success: true,
@@ -178,11 +246,13 @@ export class OpenRouterClient {
   getModelStats() {
     return {
       total: this.models.length,
+      blacklisted: this.blacklistedModels.length,
       models: this.models.map(m => ({
         id: m.id,
         name: m.name,
         context_length: m.context_length
-      }))
+      })),
+      blacklistedModels: this.blacklistedModels
     };
   }
 }

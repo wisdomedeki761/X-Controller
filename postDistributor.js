@@ -52,23 +52,14 @@ export class PostDistributor {
       }
     }
 
-    // Distribute posts: each account gets one post
-    // If more posts than accounts, some accounts will post multiple times
-    // If more accounts than posts, some accounts won't post
-    const postsPerAccount = Math.ceil(posts.length / accounts.length);
-    
-    let postIndex = 0;
-    
-    for (let i = 0; i < accounts.length && postIndex < posts.length; i++) {
-      const account = accounts[i];
-      const postsForThisAccount = Math.min(
-        postsPerAccount,
-        posts.length - postIndex
-      );
+    // Handle posting logic
+    if (posts.length === 1) {
+      // Broadcast mode: all accounts post the same content
+      const postText = posts[0];
 
-      for (let j = 0; j < postsForThisAccount && postIndex < posts.length; j++) {
-        const postText = posts[postIndex];
-        
+      for (let i = 0; i < accounts.length; i++) {
+        const account = accounts[i];
+
         try {
           console.log(`📝 [${account.name}] Posting: "${postText.substring(0, 50)}${postText.length > 50 ? '...' : ''}"${mediaId ? ' with image' : ''}`);
 
@@ -95,12 +86,12 @@ export class PostDistributor {
           console.log(`✅ [${account.name}] Posted successfully: ${result.data.id}\n`);
 
           // Delay between posts to avoid rate limiting
-          if (postIndex < posts.length - 1) {
+          if (i < accounts.length - 1) {
             await delay(delayBetweenPosts);
           }
         } catch (error) {
           let errorMessage = error.message;
-          
+
           // Provide more helpful error messages
           if (error.code === 403 || error.message.includes("403")) {
             errorMessage = "403 Forbidden - Check: 1) App has Read & Write permissions, 2) Credentials are correct, 3) Account is not suspended";
@@ -109,12 +100,12 @@ export class PostDistributor {
           } else if (error.code === 429 || error.message.includes("429")) {
             errorMessage = "429 Rate Limit - Too many requests. Wait before trying again.";
           }
-          
+
           console.error(`❌ [${account.name}] Failed to post:`, errorMessage);
           if (error.data) {
             console.error(`   Details:`, JSON.stringify(error.data, null, 2));
           }
-          
+
           results.push({
             success: false,
             account: account.name,
@@ -123,8 +114,144 @@ export class PostDistributor {
             errorCode: error.code
           });
         }
+      }
+    } else {
+      // Distribute mode
+      if (posts.length < accounts.length) {
+        // Cycle through posts when more accounts than tweets
+        for (let i = 0; i < accounts.length; i++) {
+          const account = accounts[i];
+          const postText = posts[i % posts.length]; // Cycle through available posts
 
-        postIndex++;
+          try {
+            console.log(`📝 [${account.name}] Posting: "${postText.substring(0, 50)}${postText.length > 50 ? '...' : ''}"${mediaId ? ' with image' : ''}`);
+
+            // Prepare tweet data
+            const tweetData = {
+              text: postText,
+            };
+
+            // Add media if available
+            if (mediaId) {
+              tweetData.media = { media_ids: [mediaId] };
+            }
+
+            const result = await account.client.v2.tweet(tweetData);
+
+            results.push({
+              success: true,
+              account: account.name,
+              post: postText,
+              tweetId: result.data.id,
+              tweetUrl: `https://twitter.com/${result.data.username}/status/${result.data.id}`
+            });
+
+            console.log(`✅ [${account.name}] Posted successfully: ${result.data.id}\n`);
+
+            // Delay between posts to avoid rate limiting
+            if (i < accounts.length - 1) {
+              await delay(delayBetweenPosts);
+            }
+          } catch (error) {
+            let errorMessage = error.message;
+
+            // Provide more helpful error messages
+            if (error.code === 403 || error.message.includes("403")) {
+              errorMessage = "403 Forbidden - Check: 1) App has Read & Write permissions, 2) Credentials are correct, 3) Account is not suspended";
+            } else if (error.code === 401 || error.message.includes("401")) {
+              errorMessage = "401 Unauthorized - Invalid credentials. Check your API keys and tokens.";
+            } else if (error.code === 429 || error.message.includes("429")) {
+              errorMessage = "429 Rate Limit - Too many requests. Wait before trying again.";
+            }
+
+            console.error(`❌ [${account.name}] Failed to post:`, errorMessage);
+            if (error.data) {
+              console.error(`   Details:`, JSON.stringify(error.data, null, 2));
+            }
+
+            results.push({
+              success: false,
+              account: account.name,
+              post: postText,
+              error: errorMessage,
+              errorCode: error.code
+            });
+          }
+        }
+      } else {
+        // Standard distribution: some accounts may post multiple times
+        const postsPerAccount = Math.ceil(posts.length / accounts.length);
+
+        let postIndex = 0;
+
+        for (let i = 0; i < accounts.length && postIndex < posts.length; i++) {
+          const account = accounts[i];
+          const postsForThisAccount = Math.min(
+            postsPerAccount,
+            posts.length - postIndex
+          );
+
+          for (let j = 0; j < postsForThisAccount && postIndex < posts.length; j++) {
+            const postText = posts[postIndex];
+
+            try {
+              console.log(`📝 [${account.name}] Posting: "${postText.substring(0, 50)}${postText.length > 50 ? '...' : ''}"${mediaId ? ' with image' : ''}`);
+
+              // Prepare tweet data
+              const tweetData = {
+                text: postText,
+              };
+
+              // Add media if available
+              if (mediaId) {
+                tweetData.media = { media_ids: [mediaId] };
+              }
+
+              const result = await account.client.v2.tweet(tweetData);
+
+              results.push({
+                success: true,
+                account: account.name,
+                post: postText,
+                tweetId: result.data.id,
+                tweetUrl: `https://twitter.com/${result.data.username}/status/${result.data.id}`
+              });
+
+              console.log(`✅ [${account.name}] Posted successfully: ${result.data.id}\n`);
+
+              // Delay between posts to avoid rate limiting
+              if (postIndex < posts.length - 1) {
+                await delay(delayBetweenPosts);
+              }
+            } catch (error) {
+              let errorMessage = error.message;
+
+              // Provide more helpful error messages
+              if (error.code === 403 || error.message.includes("403")) {
+                errorMessage = "403 Forbidden - Check: 1) App has Read & Write permissions, 2) Credentials are correct, 3) Account is not suspended";
+              } else if (error.code === 401 || error.message.includes("401")) {
+                errorMessage = "401 Unauthorized - Invalid credentials. Check your API keys and tokens.";
+              } else if (error.code === 429 || error.message.includes("429")) {
+                errorMessage = "429 Rate Limit - Too many requests. Wait before trying again.";
+              }
+
+              console.error(`❌ [${account.name}] Failed to post:`, errorMessage);
+              if (error.data) {
+                console.error(`   Details:`, JSON.stringify(error.data, null, 2));
+              }
+
+              results.push({
+                success: false,
+                account: account.name,
+                post: postText,
+                error: errorMessage,
+                errorCode: error.code
+              });
+            }
+
+            postIndex++;
+          }
+        }
       }
     }
 

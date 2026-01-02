@@ -13,13 +13,19 @@ const __dirname = path.dirname(__filename);
 export class AccountManager {
   constructor() {
     this.accounts = [];
-    this.loadAccounts();
+  }
+
+  /**
+   * Initialize the account manager (call this after construction)
+   */
+  async initialize() {
+    await this.loadAccounts();
   }
 
   /**
    * Loads all account .env files from the accounts directory
    */
-  loadAccounts() {
+  async loadAccounts() {
     const accountsDir = path.join(__dirname, "accounts");
     
     // Create accounts directory if it doesn't exist
@@ -58,6 +64,16 @@ export class AccountManager {
             accessToken: accessToken,
             accessSecret: accessSecret,
           });
+
+          // Test credentials by trying to get user info
+          try {
+            await client.v2.me();
+            console.log(`✅ [${accountName}] Credentials validated successfully`);
+          } catch (error) {
+            console.error(`❌ [${accountName}] Credential validation failed:`, error.message);
+            console.error(`   This account will be skipped. Please check your API credentials.`);
+            continue; // Skip this account
+          }
 
           this.accounts.push({
             name: accountName,

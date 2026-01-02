@@ -50,6 +50,13 @@ export class XRaiderTelegramBot {
   }
 
   /**
+   * Initialize the bot (call this after construction)
+   */
+  async initialize() {
+    await this.accountManager.initialize();
+  }
+
+  /**
    * Check if user is admin
    */
   isAdmin(userId) {
@@ -318,6 +325,9 @@ Need help? Contact the developer.
 
       let message = `🤖 *AI Models Status*\n\n`;
       message += `📊 Available: ${stats.total} free models\n`;
+      if (stats.blacklisted > 0) {
+        message += `🚫 Blacklisted: ${stats.blacklisted} problematic models\n`;
+      }
 
       if (updaterStats) {
         message += `🔄 Auto-update: ${updaterStats.nextUpdate}\n`;
@@ -331,6 +341,18 @@ Need help? Contact the developer.
 
       if (stats.models.length > 10) {
         message += `\n... and ${stats.models.length - 10} more`;
+      }
+
+      // Show blacklisted models if any
+      if (stats.blacklisted > 0) {
+        message += `\n\n*🚫 Blacklisted Models:*`;
+        stats.blacklistedModels.slice(0, 5).forEach((modelId, index) => {
+          const modelName = modelId.split('/')[1]?.split(':')[0] || modelId;
+          message += `\n${index + 1}. \`${modelName}\``;
+        });
+        if (stats.blacklisted > 5) {
+          message += `\n...and ${stats.blacklisted - 5} more`;
+        }
       }
 
       this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
