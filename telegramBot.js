@@ -20,10 +20,14 @@ export class XRaiderTelegramBot {
     this.postDistributor = new PostDistributor(this.accountManager);
     this.userStates = new Map(); // Track user conversation states
     this.tempData = new Map(); // Store temporary data like images
+    this.lastBotMessages = new Map(); // Track last bot message per chat for cleanup
 
     // Load admin IDs from environment
     this.adminIds = process.env.ADMIN_IDS ?
       process.env.ADMIN_IDS.split(',').map(id => id.trim()) : [];
+
+    // Track authorized private groups
+    this.authorizedGroups = new Set();
 
     if (this.adminIds.length === 0) {
       console.warn('⚠️  No ADMIN_IDS configured in .env file');
@@ -57,10 +61,49 @@ export class XRaiderTelegramBot {
   }
 
   /**
-   * Check if user is admin
+   * Check if user is authorized (admin or member of authorized private group)
+   */
+  isAuthorized(userId, chatId, chatType) {
+    // Admins are always authorized
+    if (this.adminIds.includes(userId.toString())) {
+      return true;
+    }
+    // In private groups, all members are authorized
+    if ((chatType === 'group' || chatType === 'supergroup') && this.authorizedGroups.has(chatId.toString())) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check if user is admin (for admin-only commands)
    */
   isAdmin(userId) {
     return this.adminIds.includes(userId.toString());
+  }
+
+  /**
+   * Delete previous bot message in a chat
+   */
+  async deletePreviousMessage(chatId) {
+    const lastMsgId = this.lastBotMessages.get(chatId);
+    if (lastMsgId) {
+      try {
+        await this.bot.deleteMessage(chatId, lastMsgId);
+      } catch (error) {
+        // Ignore errors (message may already be deleted or too old)
+      }
+    }
+  }
+
+  /**
+   * Send message and track it for cleanup
+   */
+  async sendAndTrack(chatId, text, options = {}) {
+    await this.deletePreviousMessage(chatId);
+    const sentMsg = await this.bot.sendMessage(chatId, text, options);
+    this.lastBotMessages.set(chatId, sentMsg.message_id);
+    return sentMsg;
   }
 
   /**
@@ -70,10 +113,14 @@ export class XRaiderTelegramBot {
     const commands = [
       { command: 'start', description: 'Start the bot' },
       { command: 'accounts', description: 'List all accounts' },
-      { command: 'post', description: 'Create posts (use /post5 for 5 accounts)' },
-      { command: 'reply', description: 'Reply to tweets (use /reply3 for 3 accounts)' },
-      { command: 'retweet', description: 'Retweet tweets (use /retweet2 for 2 accounts)' },
-      { command: 'addaccount', description: 'Add a new account' },
+      { command: 'post', description: 'Create posts (/post, /post5, /post accountname)' },
+      { command: 'reply', description: 'Reply to tweets (/reply, /reply accountname)' },
+      { command: 'comment', description: 'Comment on tweets (alias for /reply)' },
+      { command: 'retweet', description: 'Retweet (/retweet, /retweet accountname)' },
+      { command: 'like', description: 'Like tweets (/like, /like accountname)' },
+      { command: 'done', description: 'Finish post/reply without image' },
+      { command: 'cancel', description: 'Cancel current operation' },
+      { command: 'addaccount', description: 'Add a new account (admin only)' },
       { command: 'help', description: 'Show help' }
     ];
 
@@ -93,13 +140,50 @@ export class XRaiderTelegramBot {
    * Set up message and command handlers
    */
   setupMessageHandlers() {
+    // Handle bot being added to a group
+    this.bot.on('new_chat_members', (msg) => {
+      const chatId = msg.chat.id;
+      const chatType = msg.chat.type;
+      const newMembers = msg.new_chat_members;
+      const botInfo = this.bot.options;
+
+      // Check if bot was added to a private group
+      newMembers.forEach(async (member) => {
+        if (member.is_bot && member.username === (await this.bot.getMe()).username) {
+          if (chatType === 'group' || chatType === 'supergroup') {
+            // Authorize this group
+            this.authorizedGroups.add(chatId.toString());
+            console.log(`✅ Bot added to group ${chatId}, group is now authorized`);
+            this.sendAndTrack(chatId, '✅ *X-Raider Bot Activated!*\n\nAll members of this group can now use the bot.\n\nType /help to see available commands.', { parse_mode: 'Markdown' });
+          }
+        }
+      });
+    });
+
+    // Handle bot being removed from a group
+    this.bot.on('left_chat_member', async (msg) => {
+      const chatId = msg.chat.id;
+      const leftMember = msg.left_chat_member;
+
+      if (leftMember.is_bot && leftMember.username === (await this.bot.getMe()).username) {
+        this.authorizedGroups.delete(chatId.toString());
+        console.log(`🚪 Bot removed from group ${chatId}, group deauthorized`);
+      }
+    });
+
     // Start command
-    this.bot.onText(/\/start/, (msg) => {
+    this.bot.onText(/\/start/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      // If in a group, authorize it
+      if (chatType === 'group' || chatType === 'supergroup') {
+        this.authorizedGroups.add(chatId.toString());
+      }
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
       const welcomeMessage = `
@@ -108,7 +192,8 @@ export class XRaiderTelegramBot {
 I can help you manage multiple X (Twitter) accounts!
 
 *Available commands:*
-/post - Create posts with images
+/post - Create posts (all accounts)
+/post accountname - Post from specific account
 /reply - Reply to tweets
 /retweet - Retweet posts
 /accounts - List your accounts
@@ -129,16 +214,17 @@ Third tweet here
 
 Send me the text, then optionally add an image!
       `;
-      this.bot.sendMessage(chatId, welcomeMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, welcomeMessage, { parse_mode: 'Markdown' });
     });
 
     // Help command
-    this.bot.onText(/\/help/, (msg) => {
+    this.bot.onText(/\/help/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
       const helpMessage = `
@@ -146,10 +232,14 @@ Send me the text, then optionally add an image!
 
 *Creating Posts:*
 1. Send /post command (uses all accounts)
-   Or /post{N} (uses N accounts) - e.g., /post1, /post5, /post11, /post99
+   Or /post accountname (uses specific account)
+   Or /post{N} (uses N accounts) - e.g., /post1, /post5
 2. Send your tweet text (use paragraphs for multiple tweets)
 3. Optionally send an image
 4. Bot will distribute across selected accounts
+
+*Example - Post from specific account:*
+\`/post myaccount\` then send your tweet
 
 *Example Multi-Tweet:*
 \`\`\`
@@ -160,48 +250,58 @@ Tweet 2 content here
 Tweet 3 content here
 \`\`\`
 
-*Replying to Tweets:*
-1. Send /reply command (uses all accounts)
-   Or /reply{N} (uses N accounts) - e.g., /reply1, /reply2, /reply7
+*Replying/Commenting:*
+1. Send /reply or /comment command (uses all accounts)
+   Or /reply accountname (uses specific account)
+   Or /reply{N} (uses N accounts)
 2. Send the tweet URL or ID
 3. Send your reply text
 4. Bot will reply from selected accounts
 
 *Retweeting:*
 1. Send /retweet command (uses all accounts)
-   Or /retweet{N} (uses N accounts) - e.g., /retweet1, /retweet4, /retweet10
+   Or /retweet accountname (uses specific account)
+   Or /retweet{N} (uses N accounts)
 2. Send the tweet URL or ID
 3. Bot will retweet from selected accounts
 
-*Adding Accounts:*
+*Liking Tweets:*
+1. Send /like command (uses all accounts)
+   Or /like accountname (uses specific account)
+   Or /like{N} (uses N accounts)
+2. Send the tweet URL or ID
+3. Bot will like from selected accounts
+
+*Adding Accounts (Admin only):*
 1. Send /addaccount command
-2. Send account name
-3. Send API_KEY
-4. Send API_SECRET
-5. Send ACCESS_TOKEN
-6. Send ACCESS_SECRET
+2. Send account name (must be unique)
+3. Send API\\_KEY
+4. Send API\\_SECRET
+5. Send ACCESS\\_TOKEN
+6. Send ACCESS\\_SECRET
 
 *Rate Limits:* 500 posts/month per account
 *Delay:* 2 seconds between posts by default
 
 Need help? Contact the developer.
       `;
-      this.bot.sendMessage(chatId, helpMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, helpMessage, { parse_mode: 'Markdown' });
     });
 
     // Accounts command
-    this.bot.onText(/\/accounts/, (msg) => {
+    this.bot.onText(/\/accounts/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
       const accounts = this.accountManager.getAccounts();
 
       if (accounts.length === 0) {
-        this.bot.sendMessage(chatId, '❌ No accounts configured. Use /addaccount to add accounts.');
+        await this.sendAndTrack(chatId, '❌ No accounts configured. Use /addaccount to add accounts.');
         return;
       }
 
@@ -210,89 +310,292 @@ Need help? Contact the developer.
         accountList += `${index + 1}. \`${account.name}\`\n`;
       });
 
-      this.bot.sendMessage(chatId, accountList, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, accountList, { parse_mode: 'Markdown' });
     });
 
-    // Post command with optional account count
-    this.bot.onText(/\/post(\d*)/, (msg, match) => {
+    // Post command with optional account count or account name
+    // Matches: /post, /post5, /post accountname
+    this.bot.onText(/\/post(?:\s+(.+)|(\d*))?$/, async (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
-      const maxAccounts = match[1] ? parseInt(match[1]) : null; // null means use all accounts
-      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
+      const accountNameArg = match[1]?.trim(); // Account name after space
+      const numberArg = match[2]; // Number directly after /post
 
-      this.userStates.set(userId, { action: 'waiting_for_post_text', chatId, maxAccounts });
-      this.tempData.set(userId, { maxAccounts });
+      let maxAccounts = null;
+      let specificAccount = null;
+      let accountCountText = ' (using all accounts)';
 
-      this.bot.sendMessage(chatId, `📝 *Send me your tweet text${accountCountText}:*\n\n- For multiple tweets, separate with empty lines\n- Then optionally send an image\n\nExample:\n\`\`\`\nFirst tweet\n\nSecond tweet\n\nThird tweet\n\`\`\``, { parse_mode: 'Markdown' });
-    });
+      if (accountNameArg && !/^\d+$/.test(accountNameArg)) {
+        // It's an account name, not a number
+        const accounts = this.accountManager.getAccounts();
+        specificAccount = accounts.find(acc => acc.name.toLowerCase() === accountNameArg.toLowerCase());
 
-    // Reply command with optional account count
-    this.bot.onText(/\/reply(\d*)/, (msg, match) => {
-      const chatId = msg.chat.id;
-      const userId = msg.from.id;
-
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+        if (!specificAccount) {
+          const availableNames = accounts.map(a => `\`${a.name}\``).join(', ');
+          await this.sendAndTrack(chatId, `❌ Account "${accountNameArg}" not found.\n\n*Available accounts:* ${availableNames || 'None'}`, { parse_mode: 'Markdown' });
+          return;
+        }
+        accountCountText = ` (using account: ${specificAccount.name})`;
+      } else if (numberArg) {
+        maxAccounts = parseInt(numberArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      } else if (accountNameArg && /^\d+$/.test(accountNameArg)) {
+        maxAccounts = parseInt(accountNameArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
       }
 
-      const maxAccounts = match[1] ? parseInt(match[1]) : null;
-      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
+      this.userStates.set(userId, { action: 'waiting_for_post_text', chatId, maxAccounts, specificAccount: specificAccount?.name });
+      this.tempData.set(userId, { maxAccounts, specificAccount: specificAccount?.name });
 
-      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, replyMode: true, maxAccounts });
-      this.tempData.set(userId, { maxAccounts });
-
-      this.bot.sendMessage(chatId, `🔗 *Send me the tweet URL or ID to reply to${accountCountText}:*`, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, `📝 *Send me your tweet text${accountCountText}:*\n\n- For multiple tweets, separate with empty lines\n- Then optionally send an image\n\nExample:\n\`\`\`\nFirst tweet\n\nSecond tweet\n\nThird tweet\n\`\`\``, { parse_mode: 'Markdown' });
     });
 
-    // Retweet command with optional account count
-    this.bot.onText(/\/retweet(\d*)/, (msg, match) => {
+    // Reply command with optional account count or account name
+    this.bot.onText(/\/reply(?:\s+(.+)|(\d*))?$/, async (msg, match) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
-      const maxAccounts = match[1] ? parseInt(match[1]) : null;
-      const accountCountText = maxAccounts ? ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})` : ' (using all accounts)';
+      const accountNameArg = match[1]?.trim();
+      const numberArg = match[2];
 
-      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, retweetMode: true, maxAccounts });
-      this.tempData.set(userId, { maxAccounts });
+      let maxAccounts = null;
+      let specificAccount = null;
+      let accountCountText = ' (using all accounts)';
 
-      this.bot.sendMessage(chatId, `🔄 *Send me the tweet URL or ID to retweet${accountCountText}:*`, { parse_mode: 'Markdown' });
+      if (accountNameArg && !/^\d+$/.test(accountNameArg)) {
+        const accounts = this.accountManager.getAccounts();
+        specificAccount = accounts.find(acc => acc.name.toLowerCase() === accountNameArg.toLowerCase());
+
+        if (!specificAccount) {
+          const availableNames = accounts.map(a => `\`${a.name}\``).join(', ');
+          await this.sendAndTrack(chatId, `❌ Account "${accountNameArg}" not found.\n\n*Available accounts:* ${availableNames || 'None'}`, { parse_mode: 'Markdown' });
+          return;
+        }
+        accountCountText = ` (using account: ${specificAccount.name})`;
+      } else if (numberArg) {
+        maxAccounts = parseInt(numberArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      } else if (accountNameArg && /^\d+$/.test(accountNameArg)) {
+        maxAccounts = parseInt(accountNameArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      }
+
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, replyMode: true, maxAccounts, specificAccount: specificAccount?.name });
+      this.tempData.set(userId, { maxAccounts, specificAccount: specificAccount?.name });
+
+      await this.sendAndTrack(chatId, `🔗 *Send me the tweet URL or ID to reply to${accountCountText}:*`, { parse_mode: 'Markdown' });
     });
 
-    // Add account command
-    this.bot.onText(/\/addaccount/, (msg) => {
+    // Retweet command with optional account count or account name
+    this.bot.onText(/\/retweet(?:\s+(.+)|(\d*))?$/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const chatType = msg.chat.type;
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      }
+
+      const accountNameArg = match[1]?.trim();
+      const numberArg = match[2];
+
+      let maxAccounts = null;
+      let specificAccount = null;
+      let accountCountText = ' (using all accounts)';
+
+      if (accountNameArg && !/^\d+$/.test(accountNameArg)) {
+        const accounts = this.accountManager.getAccounts();
+        specificAccount = accounts.find(acc => acc.name.toLowerCase() === accountNameArg.toLowerCase());
+
+        if (!specificAccount) {
+          const availableNames = accounts.map(a => `\`${a.name}\``).join(', ');
+          await this.sendAndTrack(chatId, `❌ Account "${accountNameArg}" not found.\n\n*Available accounts:* ${availableNames || 'None'}`, { parse_mode: 'Markdown' });
+          return;
+        }
+        accountCountText = ` (using account: ${specificAccount.name})`;
+      } else if (numberArg) {
+        maxAccounts = parseInt(numberArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      } else if (accountNameArg && /^\d+$/.test(accountNameArg)) {
+        maxAccounts = parseInt(accountNameArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      }
+
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, retweetMode: true, maxAccounts, specificAccount: specificAccount?.name });
+      this.tempData.set(userId, { maxAccounts, specificAccount: specificAccount?.name });
+
+      await this.sendAndTrack(chatId, `🔄 *Send me the tweet URL or ID to retweet${accountCountText}:*`, { parse_mode: 'Markdown' });
+    });
+
+    // Like command with optional account count or account name
+    this.bot.onText(/\/like(?:\s+(.+)|(\d*))?$/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const chatType = msg.chat.type;
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      }
+
+      const accountNameArg = match[1]?.trim();
+      const numberArg = match[2];
+
+      let maxAccounts = null;
+      let specificAccount = null;
+      let accountCountText = ' (using all accounts)';
+
+      if (accountNameArg && !/^\d+$/.test(accountNameArg)) {
+        const accounts = this.accountManager.getAccounts();
+        specificAccount = accounts.find(acc => acc.name.toLowerCase() === accountNameArg.toLowerCase());
+
+        if (!specificAccount) {
+          const availableNames = accounts.map(a => `\`${a.name}\``).join(', ');
+          await this.sendAndTrack(chatId, `❌ Account "${accountNameArg}" not found.\n\n*Available accounts:* ${availableNames || 'None'}`, { parse_mode: 'Markdown' });
+          return;
+        }
+        accountCountText = ` (using account: ${specificAccount.name})`;
+      } else if (numberArg) {
+        maxAccounts = parseInt(numberArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      } else if (accountNameArg && /^\d+$/.test(accountNameArg)) {
+        maxAccounts = parseInt(accountNameArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      }
+
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, likeMode: true, maxAccounts, specificAccount: specificAccount?.name });
+      this.tempData.set(userId, { maxAccounts, specificAccount: specificAccount?.name });
+
+      await this.sendAndTrack(chatId, `❤️ *Send me the tweet URL or ID to like${accountCountText}:*`, { parse_mode: 'Markdown' });
+    });
+
+    // Comment command (alias for reply)
+    this.bot.onText(/\/comment(?:\s+(.+)|(\d*))?$/, async (msg, match) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const chatType = msg.chat.type;
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      }
+
+      const accountNameArg = match[1]?.trim();
+      const numberArg = match[2];
+
+      let maxAccounts = null;
+      let specificAccount = null;
+      let accountCountText = ' (using all accounts)';
+
+      if (accountNameArg && !/^\d+$/.test(accountNameArg)) {
+        const accounts = this.accountManager.getAccounts();
+        specificAccount = accounts.find(acc => acc.name.toLowerCase() === accountNameArg.toLowerCase());
+
+        if (!specificAccount) {
+          const availableNames = accounts.map(a => `\`${a.name}\``).join(', ');
+          await this.sendAndTrack(chatId, `❌ Account "${accountNameArg}" not found.\n\n*Available accounts:* ${availableNames || 'None'}`, { parse_mode: 'Markdown' });
+          return;
+        }
+        accountCountText = ` (using account: ${specificAccount.name})`;
+      } else if (numberArg) {
+        maxAccounts = parseInt(numberArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      } else if (accountNameArg && /^\d+$/.test(accountNameArg)) {
+        maxAccounts = parseInt(accountNameArg);
+        accountCountText = ` (using ${maxAccounts} account${maxAccounts === 1 ? '' : 's'})`;
+      }
+
+      this.userStates.set(userId, { action: 'waiting_for_tweet_id', chatId, replyMode: true, maxAccounts, specificAccount: specificAccount?.name });
+      this.tempData.set(userId, { maxAccounts, specificAccount: specificAccount?.name });
+
+      await this.sendAndTrack(chatId, `💬 *Send me the tweet URL or ID to comment on${accountCountText}:*`, { parse_mode: 'Markdown' });
+    });
+
+    // Add account command (admin only)
+    this.bot.onText(/\/addaccount/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
 
+      // Only admins can add accounts
       if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+        return this.sendAndTrack(chatId, '❌ Access denied. Only admins can add accounts.');
       }
 
       this.userStates.set(userId, { action: 'waiting_for_account_name', chatId });
       this.tempData.set(userId, {});
 
-      this.bot.sendMessage(chatId, '🏷️ *Send me the account name:* (e.g., account1, account2)', { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, '🏷️ *Send me the account name:* (e.g., account1, myaccount)\n\n⚠️ Name must be unique and contain only letters and numbers.', { parse_mode: 'Markdown' });
+    });
+
+    // Done command - post/reply without image
+    this.bot.onText(/\/done/, async (msg) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const chatType = msg.chat.type;
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      }
+
+      const userState = this.userStates.get(userId);
+      if (!userState || userState.action !== 'waiting_for_image') {
+        return this.sendAndTrack(chatId, '❌ Nothing to finish. Start with /post or /reply first.');
+      }
+
+      const tempData = this.tempData.get(userId) || {};
+
+      if (tempData.postText) {
+        await this.handlePost(chatId, userId, tempData, userState);
+      } else if (tempData.replyText) {
+        await this.handleReply(chatId, userId, tempData, userState);
+      } else {
+        await this.sendAndTrack(chatId, '❌ No text provided. Start over with /post or /reply.');
+        this.userStates.delete(userId);
+        this.tempData.delete(userId);
+      }
+    });
+
+    // Cancel command - cancel current operation
+    this.bot.onText(/\/cancel/, async (msg) => {
+      const chatId = msg.chat.id;
+      const userId = msg.from.id;
+      const chatType = msg.chat.type;
+
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      }
+
+      const userState = this.userStates.get(userId);
+      if (userState) {
+        this.userStates.delete(userId);
+        this.tempData.delete(userId);
+        await this.sendAndTrack(chatId, '✅ Operation cancelled.');
+      } else {
+        await this.sendAndTrack(chatId, '❌ No active operation to cancel.');
+      }
     });
 
     // AI chat command
-    this.bot.onText(/\/ai/, (msg) => {
+    this.bot.onText(/\/ai/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
       if (!this.openRouterClient) {
-        return this.bot.sendMessage(chatId, '❌ AI features not configured. Please set OPENROUTER_API_KEY in .env file.');
+        return this.sendAndTrack(chatId, '❌ AI features not configured. Please set OPENROUTER_API_KEY in .env file.');
       }
 
       // Check if there's text after /ai command
@@ -303,21 +606,22 @@ Need help? Contact the developer.
       } else {
         // Wait for next message
         this.userStates.set(userId, { action: 'waiting_for_ai_message', chatId });
-        this.bot.sendMessage(chatId, '🤖 *Send me your message for AI chat:*', { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, '🤖 *Send me your message for AI chat:*', { parse_mode: 'Markdown' });
       }
     });
 
     // Models command
-    this.bot.onText(/\/models/, (msg) => {
+    this.bot.onText(/\/models/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
+      const chatType = msg.chat.type;
 
-      if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+      if (!this.isAuthorized(userId, chatId, chatType)) {
+        return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
       }
 
       if (!this.openRouterClient) {
-        return this.bot.sendMessage(chatId, '❌ AI features not configured.');
+        return this.sendAndTrack(chatId, '❌ AI features not configured.');
       }
 
       const stats = this.openRouterClient.getModelStats();
@@ -355,28 +659,28 @@ Need help? Contact the developer.
         }
       }
 
-      this.bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, message, { parse_mode: 'Markdown' });
     });
 
-    // Update models command
+    // Update models command (admin only)
     this.bot.onText(/\/updatemodels/, async (msg) => {
       const chatId = msg.chat.id;
       const userId = msg.from.id;
 
       if (!this.isAdmin(userId)) {
-        return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+        return this.sendAndTrack(chatId, '❌ Access denied. Only admins can update models.');
       }
 
       if (!this.modelUpdater) {
-        return this.bot.sendMessage(chatId, '❌ Model updater not configured.');
+        return this.sendAndTrack(chatId, '❌ Model updater not configured.');
       }
 
       try {
-        this.bot.sendMessage(chatId, '🔄 Updating AI models...', { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, '🔄 Updating AI models...', { parse_mode: 'Markdown' });
         const models = await this.modelUpdater.forceUpdate();
-        this.bot.sendMessage(chatId, `✅ Successfully updated ${models.length} free AI models!`, { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, `✅ Successfully updated ${models.length} free AI models!`, { parse_mode: 'Markdown' });
       } catch (error) {
-        this.bot.sendMessage(chatId, `❌ Failed to update models: ${error.message}`, { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, `❌ Failed to update models: ${error.message}`, { parse_mode: 'Markdown' });
       }
     });
 
@@ -399,11 +703,12 @@ Need help? Contact the developer.
   async handleTextMessage(msg) {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    const chatType = msg.chat.type;
     const text = msg.text;
 
-    // Check admin access for all interactions
-    if (!this.isAdmin(userId)) {
-      return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+    // Check authorization for all interactions
+    if (!this.isAuthorized(userId, chatId, chatType)) {
+      return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
     }
 
     const userState = this.userStates.get(userId);
@@ -420,57 +725,79 @@ Need help? Contact the developer.
     switch (userState.action) {
       case 'waiting_for_post_text':
         tempData.postText = text;
-        this.userStates.set(userId, { action: 'waiting_for_image', chatId });
-        this.bot.sendMessage(chatId, '🖼️ *Got the text! Now send an image (optional) or send /done to post without image:*', { parse_mode: 'Markdown' });
+        this.userStates.set(userId, { ...userState, action: 'waiting_for_image' });
+        await this.sendAndTrack(chatId, '🖼️ *Got the text! Now send an image (optional) or send /done to post without image:*', { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_tweet_id':
         tempData.tweetId = this.extractTweetId(text);
         if (!tempData.tweetId) {
-          this.bot.sendMessage(chatId, '❌ Invalid tweet URL or ID. Please send a valid Twitter URL or tweet ID.');
+          await this.sendAndTrack(chatId, '❌ Invalid tweet URL or ID. Please send a valid Twitter URL or tweet ID.');
           return;
         }
 
         if (userState.replyMode) {
-          this.userStates.set(userId, { action: 'waiting_for_reply_text', chatId });
-          this.bot.sendMessage(chatId, '💬 *Send me your reply text:*', { parse_mode: 'Markdown' });
+          this.userStates.set(userId, { ...userState, action: 'waiting_for_reply_text' });
+          await this.sendAndTrack(chatId, '💬 *Send me your reply text:*', { parse_mode: 'Markdown' });
         } else if (userState.retweetMode) {
-          await this.handleRetweet(chatId, userId, tempData.tweetId);
+          await this.handleRetweet(chatId, userId, tempData.tweetId, userState);
+        } else if (userState.likeMode) {
+          await this.handleLike(chatId, userId, tempData.tweetId, userState);
         }
         break;
 
       case 'waiting_for_reply_text':
         tempData.replyText = text;
-        this.userStates.set(userId, { action: 'waiting_for_image', chatId });
-        this.bot.sendMessage(chatId, '🖼️ *Got the reply! Send an image (optional) or send /done to reply without image:*', { parse_mode: 'Markdown' });
+        this.userStates.set(userId, { ...userState, action: 'waiting_for_image' });
+        await this.sendAndTrack(chatId, '🖼️ *Got the reply! Send an image (optional) or send /done to reply without image:*', { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_account_name':
-        tempData.accountName = text.replace(/[^a-zA-Z0-9]/g, '');
+        const accountName = text.replace(/[^a-zA-Z0-9_]/g, '');
+        if (!accountName) {
+          await this.sendAndTrack(chatId, '❌ Invalid account name. Please use only letters, numbers, and underscores.');
+          return;
+        }
+
+        // Check for duplicate account names
+        const existingAccounts = this.accountManager.getAccounts();
+        const accountExists = existingAccounts.some(acc => acc.name.toLowerCase() === accountName.toLowerCase());
+
+        // Also check for .env file on disk
+        const accountsDir = path.join(__dirname, 'accounts');
+        const envFilePath = path.join(accountsDir, `${accountName}.env`);
+        const fileExists = fs.existsSync(envFilePath);
+
+        if (accountExists || fileExists) {
+          await this.sendAndTrack(chatId, `❌ Account "${accountName}" already exists! Please choose a different name.`, { parse_mode: 'Markdown' });
+          return;
+        }
+
+        tempData.accountName = accountName;
         this.userStates.set(userId, { action: 'waiting_for_api_key', chatId });
-        this.bot.sendMessage(chatId, `🔑 *Send me the API_KEY for ${tempData.accountName}:*`, { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, `🔑 *Send me the API_KEY for ${tempData.accountName}:*`, { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_api_key':
-        tempData.apiKey = text;
+        tempData.apiKey = text.trim();
         this.userStates.set(userId, { action: 'waiting_for_api_secret', chatId });
-        this.bot.sendMessage(chatId, '🔐 *Send me the API_SECRET:*', { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, '🔐 *Send me the API_SECRET:*', { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_api_secret':
-        tempData.apiSecret = text;
+        tempData.apiSecret = text.trim();
         this.userStates.set(userId, { action: 'waiting_for_access_token', chatId });
-        this.bot.sendMessage(chatId, '🔑 *Send me the ACCESS_TOKEN:*', { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, '🔑 *Send me the ACCESS_TOKEN:*', { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_access_token':
-        tempData.accessToken = text;
+        tempData.accessToken = text.trim();
         this.userStates.set(userId, { action: 'waiting_for_access_secret', chatId });
-        this.bot.sendMessage(chatId, '🔐 *Send me the ACCESS_SECRET:*', { parse_mode: 'Markdown' });
+        await this.sendAndTrack(chatId, '🔐 *Send me the ACCESS_SECRET:*', { parse_mode: 'Markdown' });
         break;
 
       case 'waiting_for_access_secret':
-        tempData.accessSecret = text;
+        tempData.accessSecret = text.trim();
         await this.handleAddAccount(chatId, userId, tempData);
         break;
     }
@@ -482,10 +809,11 @@ Need help? Contact the developer.
   async handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
+    const chatType = msg.chat.type;
 
-    // Check admin access
-    if (!this.isAdmin(userId)) {
-      return this.bot.sendMessage(chatId, '❌ Access denied. You are not authorized to use this bot.');
+    // Check authorization
+    if (!this.isAuthorized(userId, chatId, chatType)) {
+      return this.sendAndTrack(chatId, '❌ Access denied. You are not authorized to use this bot.');
     }
 
     const userState = this.userStates.get(userId);
@@ -501,36 +829,41 @@ Need help? Contact the developer.
       const fileLink = await this.bot.getFileLink(fileId);
       tempData.imageUrl = fileLink;
 
-      this.bot.sendMessage(chatId, '🖼️ *Image received!* Processing...', { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, '🖼️ *Image received!* Processing...', { parse_mode: 'Markdown' });
 
       // Execute the pending action
       if (userState.action === 'waiting_for_image') {
         if (tempData.postText) {
-          await this.handlePost(chatId, userId, tempData);
+          await this.handlePost(chatId, userId, tempData, userState);
         } else if (tempData.replyText) {
-          await this.handleReply(chatId, userId, tempData);
+          await this.handleReply(chatId, userId, tempData, userState);
         }
       }
     } catch (error) {
       console.error('Error downloading image:', error);
-      this.bot.sendMessage(chatId, '❌ Error processing image. Try again.');
+      await this.sendAndTrack(chatId, '❌ Error processing image. Try again.');
     }
   }
 
   /**
    * Handle posting tweets
    */
-  async handlePost(chatId, userId, data) {
+  async handlePost(chatId, userId, data, userState = {}) {
     try {
       // Parse multiple tweets from text (separated by double newlines)
       const tweets = data.postText.split(/\n\s*\n/).map(t => t.trim()).filter(t => t.length > 0);
 
       if (tweets.length === 0) {
-        this.bot.sendMessage(chatId, '❌ No valid tweets found.');
+        await this.sendAndTrack(chatId, '❌ No valid tweets found.');
         return;
       }
 
-      this.bot.sendMessage(chatId, `📊 Processing ${tweets.length} tweet(s)...`);
+      const specificAccount = data.specificAccount || userState.specificAccount;
+      const processingMsg = specificAccount
+        ? `📊 Processing ${tweets.length} tweet(s) for account: ${specificAccount}...`
+        : `📊 Processing ${tweets.length} tweet(s)...`;
+
+      await this.sendAndTrack(chatId, processingMsg);
 
       // If image provided, download it temporarily
       let imagePath = null;
@@ -542,7 +875,8 @@ Need help? Contact the developer.
       const results = await this.postDistributor.distributePosts(tweets, {
         delay: 2000,
         imagePath: imagePath,
-        maxAccounts: data.maxAccounts
+        maxAccounts: data.maxAccounts,
+        specificAccount: specificAccount
       });
 
       // Send results back
@@ -562,7 +896,7 @@ Need help? Contact the developer.
         });
       }
 
-      this.bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, resultMessage, { parse_mode: 'Markdown' });
 
       // Clean up
       if (imagePath) {
@@ -573,24 +907,29 @@ Need help? Contact the developer.
 
     } catch (error) {
       console.error('Post error:', error);
-      this.bot.sendMessage(chatId, `❌ Error posting: ${error.message}`);
+      await this.sendAndTrack(chatId, `❌ Error posting: ${error.message}`);
     }
   }
 
   /**
    * Handle replying to tweets
    */
-  async handleReply(chatId, userId, data) {
+  async handleReply(chatId, userId, data, userState = {}) {
     try {
       // Parse multiple replies
       const replies = data.replyText.split(/\n\s*\n/).map(r => r.trim()).filter(r => r.length > 0);
 
       if (replies.length === 0) {
-        this.bot.sendMessage(chatId, '❌ No valid replies found.');
+        await this.sendAndTrack(chatId, '❌ No valid replies found.');
         return;
       }
 
-      this.bot.sendMessage(chatId, `💬 Processing ${replies.length} reply(ies)...`);
+      const specificAccount = data.specificAccount || userState.specificAccount;
+      const processingMsg = specificAccount
+        ? `💬 Processing ${replies.length} reply(ies) for account: ${specificAccount}...`
+        : `💬 Processing ${replies.length} reply(ies)...`;
+
+      await this.sendAndTrack(chatId, processingMsg);
 
       // If image provided, download it temporarily
       let imagePath = null;
@@ -601,7 +940,8 @@ Need help? Contact the developer.
       const results = await this.postDistributor.distributeReplies(data.tweetId, replies, {
         delay: 2000,
         imagePath: imagePath,
-        maxAccounts: data.maxAccounts
+        maxAccounts: data.maxAccounts,
+        specificAccount: specificAccount
       });
 
       const successful = results.filter(r => r.success);
@@ -620,27 +960,33 @@ Need help? Contact the developer.
         });
       }
 
-      this.bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, resultMessage, { parse_mode: 'Markdown' });
 
       this.userStates.delete(userId);
       this.tempData.delete(userId);
 
     } catch (error) {
       console.error('Reply error:', error);
-      this.bot.sendMessage(chatId, `❌ Error replying: ${error.message}`);
+      await this.sendAndTrack(chatId, `❌ Error replying: ${error.message}`);
     }
   }
 
   /**
    * Handle retweeting
    */
-  async handleRetweet(chatId, userId, tweetId) {
+  async handleRetweet(chatId, userId, tweetId, userState = {}) {
     try {
-      this.bot.sendMessage(chatId, '🔄 Retweeting...');
+      const specificAccount = userState.specificAccount;
+      const processingMsg = specificAccount
+        ? `🔄 Retweeting from account: ${specificAccount}...`
+        : '🔄 Retweeting...';
+
+      await this.sendAndTrack(chatId, processingMsg);
 
       const results = await this.postDistributor.distributeRetweets(tweetId, {
         delay: 2000,
-        maxAccounts: userState.maxAccounts
+        maxAccounts: userState.maxAccounts,
+        specificAccount: specificAccount
       });
 
       const successful = results.filter(r => r.success);
@@ -659,14 +1005,59 @@ Need help? Contact the developer.
         });
       }
 
-      this.bot.sendMessage(chatId, resultMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, resultMessage, { parse_mode: 'Markdown' });
 
       this.userStates.delete(userId);
       this.tempData.delete(userId);
 
     } catch (error) {
       console.error('Retweet error:', error);
-      this.bot.sendMessage(chatId, `❌ Error retweeting: ${error.message}`);
+      await this.sendAndTrack(chatId, `❌ Error retweeting: ${error.message}`);
+    }
+  }
+
+  /**
+   * Handle liking tweets
+   */
+  async handleLike(chatId, userId, tweetId, userState = {}) {
+    try {
+      const specificAccount = userState.specificAccount;
+      const processingMsg = specificAccount
+        ? `❤️ Liking from account: ${specificAccount}...`
+        : '❤️ Liking tweet...';
+
+      await this.sendAndTrack(chatId, processingMsg);
+
+      const results = await this.postDistributor.distributeLikes(tweetId, {
+        delay: 2000,
+        maxAccounts: userState.maxAccounts,
+        specificAccount: specificAccount
+      });
+
+      const successful = results.filter(r => r.success);
+      const failed = results.filter(r => !r.success);
+
+      let resultMessage = `✅ *Liked by ${successful.length} account(s)*\n\n`;
+
+      successful.forEach(result => {
+        resultMessage += `❤️ [${result.account}] Liked\n`;
+      });
+
+      if (failed.length > 0) {
+        resultMessage += `\n❌ *Failed ${failed.length} like(s):*\n`;
+        failed.forEach(result => {
+          resultMessage += `❌ [${result.account}] ${result.error}\n`;
+        });
+      }
+
+      await this.sendAndTrack(chatId, resultMessage, { parse_mode: 'Markdown' });
+
+      this.userStates.delete(userId);
+      this.tempData.delete(userId);
+
+    } catch (error) {
+      console.error('Like error:', error);
+      await this.sendAndTrack(chatId, `❌ Error liking: ${error.message}`);
     }
   }
 
@@ -686,18 +1077,33 @@ Need help? Contact the developer.
       const envFilePath = path.join(accountsDir, `${data.accountName}.env`);
       fs.writeFileSync(envFilePath, envContent);
 
-      // Reload accounts
+      await this.sendAndTrack(chatId, `⏳ *Validating credentials for "${data.accountName}"...*`, { parse_mode: 'Markdown' });
+
+      // Reload accounts properly by creating new instance and initializing
       this.accountManager = new AccountManager();
+      await this.accountManager.initialize();
       this.postDistributor = new PostDistributor(this.accountManager);
 
-      this.bot.sendMessage(chatId, `✅ *Account "${data.accountName}" added successfully!*`, { parse_mode: 'Markdown' });
+      // Check if the account was actually loaded (credentials validated)
+      const loadedAccounts = this.accountManager.getAccounts();
+      const wasLoaded = loadedAccounts.some(acc => acc.name === data.accountName);
+
+      if (wasLoaded) {
+        await this.sendAndTrack(chatId, `✅ *Account "${data.accountName}" added and validated successfully!*\n\n📋 Total accounts loaded: ${loadedAccounts.length}`, { parse_mode: 'Markdown' });
+      } else {
+        // Credentials failed validation, remove the file
+        fs.unlinkSync(envFilePath);
+        await this.sendAndTrack(chatId, `❌ *Failed to validate credentials for "${data.accountName}".*\n\nThe account file has been removed. Please check your API keys and try again.`, { parse_mode: 'Markdown' });
+      }
 
       this.userStates.delete(userId);
       this.tempData.delete(userId);
 
     } catch (error) {
       console.error('Add account error:', error);
-      this.bot.sendMessage(chatId, `❌ Error adding account: ${error.message}`);
+      await this.sendAndTrack(chatId, `❌ Error adding account: ${error.message}`);
+      this.userStates.delete(userId);
+      this.tempData.delete(userId);
     }
   }
 
@@ -706,7 +1112,7 @@ Need help? Contact the developer.
    */
   async handleAIMessage(chatId, userId, message) {
     if (!this.openRouterClient) {
-      return this.bot.sendMessage(chatId, '❌ AI features not configured.');
+      return this.sendAndTrack(chatId, '❌ AI features not configured.');
     }
 
     try {
@@ -714,7 +1120,7 @@ Need help? Contact the developer.
       this.bot.sendChatAction(chatId, 'typing');
 
       // Send initial response
-      this.bot.sendMessage(chatId, '🤖 *Thinking...*', { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, '🤖 *Thinking...*', { parse_mode: 'Markdown' });
 
       // Get AI response with fallback logic
       const result = await this.openRouterClient.chat(message);
@@ -728,14 +1134,14 @@ Need help? Contact the developer.
         responseMessage = responseMessage.substring(0, 4000) + '\n\n*...response truncated...*';
       }
 
-      this.bot.sendMessage(chatId, responseMessage, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, responseMessage, { parse_mode: 'Markdown' });
 
       // Clean up user state
       this.userStates.delete(userId);
 
     } catch (error) {
       console.error('AI chat error:', error);
-      this.bot.sendMessage(chatId, `❌ *AI Error:* ${error.message}`, { parse_mode: 'Markdown' });
+      await this.sendAndTrack(chatId, `❌ *AI Error:* ${error.message}`, { parse_mode: 'Markdown' });
       this.userStates.delete(userId);
     }
   }

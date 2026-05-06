@@ -5,8 +5,7 @@
   "type": "module",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "telegram": "node telegramBot-cli.js",
+    "start": "node telegramBot-cli.js",
     "updatemodels": "node updateModels.js",
     "post": "node bot.js post",
     "retweet": "node bot.js retweet",

@@ -16,16 +16,28 @@ export class PostDistributor {
    * @param {Object} options - Options for posting
    * @param {string} options.imagePath - Optional path to image file to attach to all posts
    * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
+   * @param {string} options.specificAccount - Optional specific account name to use (overrides maxAccounts)
    * @returns {Promise<Array>} Results of all posts
    */
   async distributePosts(posts, options = {}) {
     const allAccounts = this.accountManager.getAccounts();
     const delayBetweenPosts = options.delay || 2000; // 2 seconds default
     const imagePath = options.imagePath;
-    const maxAccounts = options.maxAccounts || allAccounts.length;
+    const specificAccountName = options.specificAccount;
 
-    // Limit accounts to the specified maximum
-    const accounts = allAccounts.slice(0, maxAccounts);
+    let accounts;
+    if (specificAccountName) {
+      // Use only the specific account
+      const specificAccount = allAccounts.find(acc => acc.name.toLowerCase() === specificAccountName.toLowerCase());
+      if (!specificAccount) {
+        throw new Error(`Account "${specificAccountName}" not found.`);
+      }
+      accounts = [specificAccount];
+    } else {
+      const maxAccounts = options.maxAccounts || allAccounts.length;
+      accounts = allAccounts.slice(0, maxAccounts);
+    }
+
     const results = [];
 
     if (accounts.length === 0) {
@@ -264,15 +276,26 @@ export class PostDistributor {
    * @param {string} tweetId - Tweet ID to retweet
    * @param {Object} options - Options for retweeting
    * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
+   * @param {string} options.specificAccount - Optional specific account name to use (overrides maxAccounts)
    * @returns {Promise<Array>} Results of all retweets
    */
   async distributeRetweets(tweetId, options = {}) {
     const allAccounts = this.accountManager.getAccounts();
     const delayBetweenRetweets = options.delay || 2000;
-    const maxAccounts = options.maxAccounts || allAccounts.length;
+    const specificAccountName = options.specificAccount;
 
-    // Limit accounts to the specified maximum
-    const accounts = allAccounts.slice(0, maxAccounts);
+    let accounts;
+    if (specificAccountName) {
+      const specificAccount = allAccounts.find(acc => acc.name.toLowerCase() === specificAccountName.toLowerCase());
+      if (!specificAccount) {
+        throw new Error(`Account "${specificAccountName}" not found.`);
+      }
+      accounts = [specificAccount];
+    } else {
+      const maxAccounts = options.maxAccounts || allAccounts.length;
+      accounts = allAccounts.slice(0, maxAccounts);
+    }
+
     const results = [];
 
     if (accounts.length === 0) {
@@ -330,6 +353,89 @@ export class PostDistributor {
   }
 
   /**
+   * Distributes likes across accounts
+   *
+   * @param {string} tweetId - Tweet ID to like
+   * @param {Object} options - Options for liking
+   * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
+   * @param {string} options.specificAccount - Optional specific account name to use (overrides maxAccounts)
+   * @returns {Promise<Array>} Results of all likes
+   */
+  async distributeLikes(tweetId, options = {}) {
+    const allAccounts = this.accountManager.getAccounts();
+    const delayBetweenLikes = options.delay || 2000;
+    const specificAccountName = options.specificAccount;
+
+    let accounts;
+    if (specificAccountName) {
+      const specificAccount = allAccounts.find(acc => acc.name.toLowerCase() === specificAccountName.toLowerCase());
+      if (!specificAccount) {
+        throw new Error(`Account "${specificAccountName}" not found.`);
+      }
+      accounts = [specificAccount];
+    } else {
+      const maxAccounts = options.maxAccounts || allAccounts.length;
+      accounts = allAccounts.slice(0, maxAccounts);
+    }
+
+    const results = [];
+
+    if (accounts.length === 0) {
+      throw new Error("No accounts loaded.");
+    }
+
+    console.log(`\n❤️ Liking ${tweetId} across ${accounts.length} account(s)...\n`);
+
+    for (let i = 0; i < accounts.length; i++) {
+      const account = accounts[i];
+
+      try {
+        console.log(`❤️ [${account.name}] Liking...`);
+
+        // Get user ID first
+        const me = await account.client.v2.me();
+        await account.client.v2.like(me.data.id, tweetId);
+
+        results.push({
+          success: true,
+          account: account.name,
+          tweetId: tweetId
+        });
+
+        console.log(`✅ [${account.name}] Liked successfully\n`);
+
+        // Delay between likes
+        if (i < accounts.length - 1) {
+          await delay(delayBetweenLikes);
+        }
+      } catch (error) {
+        let errorMessage = error.message;
+
+        if (error.code === 403 || error.message.includes("403")) {
+          errorMessage = "403 Forbidden - Check app permissions and credentials";
+        } else if (error.code === 401 || error.message.includes("401")) {
+          errorMessage = "401 Unauthorized - Invalid credentials";
+        } else if (error.code === 429 || error.message.includes("429")) {
+          errorMessage = "429 Rate Limit - Wait before trying again";
+        } else if (error.message.includes("already liked")) {
+          errorMessage = "Already liked this tweet";
+        }
+
+        console.error(`❌ [${account.name}] Failed to like:`, errorMessage);
+        results.push({
+          success: false,
+          account: account.name,
+          tweetId: tweetId,
+          error: errorMessage,
+          errorCode: error.code
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
    * Distributes replies across accounts
    *
    * @param {string} tweetId - Tweet ID to reply to
@@ -337,16 +443,27 @@ export class PostDistributor {
    * @param {Object} options - Options for replying
    * @param {string} options.imagePath - Optional path to image file to attach to all replies
    * @param {number} options.maxAccounts - Maximum number of accounts to use (default: all)
+   * @param {string} options.specificAccount - Optional specific account name to use (overrides maxAccounts)
    * @returns {Promise<Array>} Results of all replies
    */
   async distributeReplies(tweetId, replies, options = {}) {
     const allAccounts = this.accountManager.getAccounts();
     const delayBetweenReplies = options.delay || 2000;
     const imagePath = options.imagePath;
-    const maxAccounts = options.maxAccounts || allAccounts.length;
+    const specificAccountName = options.specificAccount;
 
-    // Limit accounts to the specified maximum
-    const accounts = allAccounts.slice(0, maxAccounts);
+    let accounts;
+    if (specificAccountName) {
+      const specificAccount = allAccounts.find(acc => acc.name.toLowerCase() === specificAccountName.toLowerCase());
+      if (!specificAccount) {
+        throw new Error(`Account "${specificAccountName}" not found.`);
+      }
+      accounts = [specificAccount];
+    } else {
+      const maxAccounts = options.maxAccounts || allAccounts.length;
+      accounts = allAccounts.slice(0, maxAccounts);
+    }
+
     const results = [];
 
     if (accounts.length === 0) {
