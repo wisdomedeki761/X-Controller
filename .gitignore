@@ -29,3 +29,18 @@ Thumbs.db
 *.swo
 
 MD-FILES/
+.claude/
+
+accounts\account1.env
+accounts\account2.env
+accounts\account3.env
+accounts\Fwogg_sol.env
+accounts\RiskyxRambler.env
+
+accounts.zip
+
+Account_Prompts_Templates.md
+Implementation_Checklist.md
+X_Account_Growth_Standard_Plan.md
+ACCOUNT_CONTROL_GUIDE.md
+IMAGE_POSTING_GUIDE.md
